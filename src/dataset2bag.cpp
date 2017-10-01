@@ -4,6 +4,7 @@
 #include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/LaserScan.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <image_geometry/pinhole_camera_model.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
@@ -17,6 +18,7 @@
 #include <boost/filesystem.hpp>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -74,6 +76,7 @@ bool process_args(int argc, char** argv, po::variables_map& options)
 
     //("static-transforms", po::value<std::string>(), "path to file containing static transforms between sensors")
     ("laser", po::value<std::string>(), "path to laser scans file")
+    ("point_cloud", po::value<std::string>(), "path to point cloud file")
 
     ("help,h", "show this help")
   ;
@@ -582,6 +585,69 @@ void saveLaser(const std::string& filename, rosbag::Bag& bag)
   }
 }
 
+void savePointCloud(const std::string& path, rosbag::Bag& bag)
+{
+    class LdmrsPoint {
+        double x, y, z;
+    };
+
+    int pt_count;
+    int seq = 0;
+    long long timestamp, tmp;
+    LdmrsPoint pt[1000];
+
+    std::stringstream ss;
+    std::string ts_filename = path + ".timestamps";
+    std::string pc_filename;
+    std::ifstream ts(ts_filename.c_str(), std::ifstream::in);
+
+    while ( !ts.eof() ) {
+        seq++;
+        ts >> timestamp >> tmp;
+        ss.str("");
+        pc_filename.clear();
+        ss << path << "/" << timestamp << ".bin";
+        pc_filename = ss.str();
+
+        std::cout << "Parsing " << pc_filename << std::endl;
+
+        std::ifstream input(pc_filename.c_str(), std::ios::binary);
+        ros::Time stamp(timestamp/1000000, (timestamp%100000)*1000);
+
+        for ( pt_count = 0; !input.eof(); pt_count++ ) {
+            input.read((char*)&pt[pt_count], sizeof(LdmrsPoint));
+        }
+
+        sensor_msgs::PointCloud2 point_cloud;
+        point_cloud.header.seq = seq;
+        point_cloud.header.stamp = stamp;
+        point_cloud.height = 1;
+        point_cloud.width = pt_count;
+        point_cloud.is_bigendian = false;
+        point_cloud.is_dense = true;
+        point_cloud.point_step = 8;
+        point_cloud.row_step = 8 * pt_count;
+        point_cloud.fields.resize(3);
+        point_cloud.fields[0].name = "x";
+        point_cloud.fields[1].name = "y";
+        point_cloud.fields[2].name = "z";
+        point_cloud.fields[0].offset = 0;
+        point_cloud.fields[1].offset = sizeof(double);
+        point_cloud.fields[2].offset = 2 * sizeof(double);
+        point_cloud.fields[0].datatype = sensor_msgs::PointField::FLOAT64;
+        point_cloud.fields[1].datatype = sensor_msgs::PointField::FLOAT64;
+        point_cloud.fields[2].datatype = sensor_msgs::PointField::FLOAT64;
+        point_cloud.fields[0].count = pt_count;
+        point_cloud.fields[1].count = pt_count;
+        point_cloud.fields[2].count = pt_count;
+        point_cloud.data.resize(sizeof(LdmrsPoint) * pt_count);
+        memcpy(point_cloud.data.data(), (void*)pt, sizeof(LdmrsPoint) * pt_count);
+        bag.write("/pointsXYZ", stamp, point_cloud);
+        input.close();
+    }
+    ts.close();
+}
+
 int main(int argc, char** argv)
 {
   po::variables_map options;
@@ -617,6 +683,11 @@ int main(int argc, char** argv)
   if (options.count("laser")) {
     std::cout << "Parsing laser data..." << std::endl;
     saveLaser(options["laser"].as<std::string>(), bag);
+  }
+
+  if (options.count("point_cloud")) {
+    std::cout << "Parsing point cloud data..." << std::endl;
+    savePointCloud(options["point_cloud"].as<std::string>(), bag);
   }
 
   /** process images **/
